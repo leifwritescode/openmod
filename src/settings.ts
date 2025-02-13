@@ -113,3 +113,24 @@ export const getAppSettings = async (context: TriggerContext): Promise<AppSettin
         [AppSetting.ExcludedUsers]: (settings[AppSetting.ExcludedUsers] as string).split(',').map(x => x.trim())
     };
 };
+
+
+/**
+ * Determines if the app is minimally configured to execute
+ * @param settings the app settings
+ * @returns true if the app is sufficiently configured to execute, false otherwise
+ */
+export const isMinimallyConfigured = (settings: AppSettings): boolean => {
+    const targetSubredditName = settings[AppSetting.TargetSubredit].trim();
+    if (targetSubredditName.length === 0) {
+        console.error('destination subreddit is not configured');
+        return false;
+    }
+
+    if (settings[AppSetting.ModerationActions].length === 0) {
+        console.error('no moderation actions are selected');
+        return false;
+    }
+
+    return true;
+};

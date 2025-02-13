@@ -5,8 +5,9 @@
   "license": "AGPL-3.0-only",
   "type": "module",
   "dependencies": {
-    "@devvit/public-api": "0.11.6",
-    "@js-temporal/polyfill": "^0.4.4"
+    "@devvit/public-api": "0.11.7",
+    "@js-temporal/polyfill": "^0.4.4",
+    "@types/node": "^22.13.1"
   },
   "devDependencies": {
     "typescript": "5.3.2",

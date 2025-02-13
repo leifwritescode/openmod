@@ -1,6 +1,6 @@
 import { Devvit } from '@devvit/public-api';
 import { appSettings } from './settings.js';
-import { handleCommentOrPostDeleteEvent, handleModActionEvent } from './handlers.js';
+import { handleCommentOrPostDeleteEvent, handleCommentSubmitOrUpdateEvent, handleModActionEvent } from './handlers.js';
 import { onAppFirstInstall, onAppInstallOrUpgrade } from './installEvents.js';
 import { CDP_ENFORCEMENT_TASK } from './constants.js';
 import { enforceContentDeletionPolicy } from './cdpEnforcement.js';
@@ -8,6 +8,16 @@ import { enforceContentDeletionPolicy } from './cdpEnforcement.js';
 Devvit.configure({ redis: true, redditAPI: true });
 
 Devvit.addSettings(appSettings);
+
+Devvit.addTrigger({
+  events: [ 'CommentSubmit', 'CommentUpdate' ],
+  onEvent: handleCommentSubmitOrUpdateEvent
+});
+
+Devvit.addTrigger({
+  events: [ 'PostSubmit', 'PostUpdate' ],
+  onEvent: handleCommentSubmitOrUpdateEvent
+});
 
 Devvit.addTrigger({
   events: [ 'CommentDelete', 'PostDelete' ],

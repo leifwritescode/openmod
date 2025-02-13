@@ -1,112 +1,214 @@
 import { TriggerContext } from '@devvit/public-api';
-import { CommentDelete, ModAction, PostDelete } from '@devvit/protos';
-import { appPassesPreflightChecks, eventHasBeenProcessed } from './utility.js';
-import { RK_AUDIT, RK_MOD_ACTION, RK_USER } from './constants.js';
-import { AppSetting, getAppSettings } from './settings.js';
-import { extractPermalinkFromModActionEvent, generatePostText, resolveAccountInformation, resolveModActionId, resolveThingIdFromModActionEvent, resolveThingIdFromSubmissionDeleteEvent } from './audit.js';
+import { CommentDelete, ModAction, PostDelete, CommentSubmit, CommentUpdate, PostSubmit, PostUpdate } from '@devvit/protos';
+import { RK_DELETE_EVENT, RK_MOD_EVENT, RK_SUBMIT_EVENT, SUPPORTED_MOD_ACTIONS } from './constants.js';
+import { AppSetting, getAppSettings, isMinimallyConfigured } from './settings.js';
 import { enforceContentDeletionPolicyForThing } from './cdpEnforcement.js';
+import { ThingID, UserID } from './types.js';
+import { now, seconds } from './temporal.js';
+import { cacheComment, cachePost, cacheUser, getCachedUser, trackThing } from './redis.js';
+import { disclose } from './extract.js';
+
+export const isEventDuplicated = async (event: string, context: TriggerContext): Promise<boolean> => {
+    const key = `event:${event}`;
+    const marker = await context.redis.get(key);
+
+    if (!marker) {
+        await context.redis.set(key, `${now()}`);
+        await context.redis.expire(key, seconds({ days: 14 }));
+    }
+
+    return !!marker;
+};
+
+const isCommentUpdate = (event: CommentSubmit | CommentUpdate): event is CommentUpdate => {
+    return 'previousBody' in event;
+};
+
+const isCommentSubmit = (event: CommentSubmit | CommentUpdate): event is CommentSubmit => {
+    return !isCommentUpdate(event);
+};
+
+export const handleCommentSubmitOrUpdateEvent = async (event: CommentSubmit | CommentUpdate, context: TriggerContext) => {
+    if (!event.comment) {
+        console.log('malformed commentsubmit/commentupdate event is not handled');
+        return;
+    }
+
+    const comment = await context.reddit.getCommentById(event.comment.id);
+    if (!comment) {
+        console.log(`comment ${event.comment.id} not found`);
+        return;
+    }
+
+    const user = await comment.getAuthor();
+    if (!user) {
+        console.log(`user ${comment.authorId} not found`);
+        return;
+    }
+
+    if (isCommentSubmit(event)) {
+        const duplicated = await isEventDuplicated(RK_SUBMIT_EVENT(comment.id), context);
+        if (duplicated) {
+            console.log(`commentsubmit ${comment.id} is a duplicate`);
+            return;
+        }
+    }
+
+    await cacheComment(comment, context);
+    await cacheUser(user, context);
+    await trackThing(comment, context);
+
+    if (isCommentUpdate(event)) {
+        await updateDisclosure(comment.id, context);
+    }
+};
+
+const isPostUpdate = (event: PostSubmit | PostUpdate): event is PostUpdate => {
+    return 'previousBody' in event;
+};
+
+const isPostSubmit = (event: PostSubmit | PostUpdate): event is PostSubmit => {
+    return !isPostUpdate(event);
+};
+
+export const handlePostSubmitOrUpdateEvent = async (event: PostSubmit | PostUpdate, context: TriggerContext) => {
+    if (!event.post) {
+        console.log('malformed postsubmit/postupdate event is not handled');
+        return;
+    }
+
+    const post = await context.reddit.getPostById(event.post.id);
+    if (!post) {
+        console.log(`post ${event.post.id} not found`);
+        return;
+    }
+
+    const user = await post.getAuthor();
+    if (!user) {
+        console.log(`user ${post.authorId} not found`);
+        return;
+    }
+
+    if (isPostSubmit(event)) {
+        const duplicated = await isEventDuplicated(RK_SUBMIT_EVENT(post.id), context);
+        if (duplicated) {
+            console.log(`postsubmit ${post.id} is a duplicate`);
+            return;
+        }
+    }
+
+    await cachePost(post, context);
+    await cacheUser(user, context);
+    await trackThing(post, context);
+
+    if (isPostUpdate(event)) {
+        await updateDisclosure(post.id, context);
+    }
+};
+
+const isCommentDelete = (event: CommentDelete | PostDelete): event is CommentDelete => {
+    return 'commentId' in event;
+};
 
 export const handleCommentOrPostDeleteEvent = async (event: CommentDelete | PostDelete, context: TriggerContext) => {
-    const preFlightPasses = await appPassesPreflightChecks(context);
-    if (!preFlightPasses) {
-        console.log('Preflight checks failed');
-        return;
-    }
-
     if (event.source !== 1) {
-        console.log(`The event is not a user-generated deletion, skipping`);
+        console.log(`delete event did not originate from the original author`);
         return;
     }
 
-    const thingId = resolveThingIdFromSubmissionDeleteEvent(event);
+    let thing: ThingID;
+    if (isCommentDelete(event)) {
+        const comment = await context.reddit.getCommentById(event.commentId);
+        if (!comment) {
+            console.log(`comment ${event.commentId} not found`);
+            return;
+        }
+        thing = comment.id;
+    } else {
+        const post = await context.reddit.getPostById(event.postId);
+        if (!post) {
+            console.log(`post ${event.postId} not found`);
+            return;
+        }
+        thing = post.id;
+    }
 
-    const hasBeenProcessed = await eventHasBeenProcessed(context, thingId);
-    if (hasBeenProcessed) {
-        console.log(`Event ${thingId} has already been processed`);
+    const duplicate = await isEventDuplicated(RK_DELETE_EVENT(thing), context);
+    if (duplicate) {
+        console.log(`delete ${thing} is a duplicate`);
         return;
     }
 
-    await enforceContentDeletionPolicyForThing(thingId, context);
-    console.log(`Enforced CDP for thing ${thingId}`);
+    await enforceContentDeletionPolicyForThing(thing, context);
+    console.log(`enforce content deletion policy ${thing} complete`);
+};
+
+export const getModActionId = async (event: ModAction): Promise<string> => {
+    const json = JSON.stringify(event);
+    const encoder = new TextEncoder();
+    const data = encoder.encode(json);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
 };
 
 export const handleModActionEvent = async (event: ModAction, context: TriggerContext) => {
-    const preFlightPasses = await appPassesPreflightChecks(context);
-    if (!preFlightPasses) {
-        console.log('Preflight checks failed');
-        return;
-    }
-
-    const eventId = resolveModActionId(event);
-    const hasBeenProcessed = await eventHasBeenProcessed(context, eventId);
-    if (hasBeenProcessed) {
-        console.log(`Event ${eventId} has already been processed`);
-        return;
-    }
-
     const settings = await getAppSettings(context);
-    
-    const mod = await resolveAccountInformation(event.moderator!.name, context);
-    if (!settings[AppSetting.RecordAdminActions] && mod.isAdmin) {
-        console.log(`Admin actions are not being recorded, skipping event ${eventId}`);
+    if (!isMinimallyConfigured(settings)) {
+        console.error('app configuration has not been completed');
         return;
     }
 
-    if (!settings[AppSetting.RecordAutoModeratorActions] && mod.username === 'AutoModerator') {
-        console.log(`AutoModerator actions are not being recorded, skipping event ${eventId}`);
+    if (!event.action || !event.moderator || !event.subreddit || !event.targetUser) {
+        console.log('malformed modaction event is not handled');
         return;
     }
 
-    if (settings[AppSetting.ExcludedModerators].includes(mod.username)) {
-        console.log(`Moderator ${mod.username} is excluded from recording, skipping event ${eventId}`);
+    const eventid = await getModActionId(event);
+    const duplicated = await isEventDuplicated(RK_MOD_EVENT(eventid), context);
+    if (duplicated) {
+        console.log(`modaction ${eventid} has already been processed`);
         return;
     }
 
-    const user = await resolveAccountInformation(event.targetUser!.name, context);
-    if (settings[AppSetting.ExcludedUsers].includes(user.username)) {
-        console.log(`User ${user.username} is excluded from recording, skipping event ${eventId}`);
+    if (!SUPPORTED_MOD_ACTIONS.includes(event.action)) {
+        console.log(`${event.action} is not supported`);
         return;
     }
 
-    if (!settings[AppSetting.ModerationActions].includes(event.action!)) {
-        console.log(`${event.action} actions are not being recorded, skipping event ${eventId}`);
+    const moderator = await getCachedUser(event.moderator.id as UserID, context);
+    if (!settings[AppSetting.RecordAdminActions] && moderator.isAdmin) {
+        console.log(`admin actions are not being recorded, skipping event ${eventid}`);
         return;
     }
 
-    const subredditModTeamUser = `${context.subredditName}-ModTeam`;
-    if (user.username === subredditModTeamUser) {
-        console.log(`User ${subredditModTeamUser} is excluded from recording, skipping event ${eventId}`);
+    if (!settings[AppSetting.RecordAutoModeratorActions] && event.moderator.name === 'AutoModerator') {
+        console.log(`automoderator actions are not being recorded, skipping event ${eventid}`);
         return;
     }
 
-    const userId = event.targetUser!.id;
-    const thingId = resolveThingIdFromModActionEvent(event);
-    console.log(`Processing event ${eventId} for thing ${thingId} by ${userId}`);
+    if (settings[AppSetting.ExcludedModerators].includes(event.moderator.name)) {
+        console.log(`${event.moderator.name} is excluded from recording, skipping event ${eventid}`);
+        return;
+    }
 
-    // will update the score with the most recently actioned time
-    await context.redis.zAdd(RK_USER(userId), { member: thingId, score: event.actionedAt!.getTime() });
-    console.log(`Added ${thingId} to user ${userId}'s record`);
+    if (settings[AppSetting.ExcludedUsers].includes(event.targetUser.name)) {
+        console.log(`${event.targetUser.name} is excluded from recording, skipping event ${eventid}`);
+        return;
+    }
 
-    const permalink = extractPermalinkFromModActionEvent(event);
-    const content = generatePostText(event.action!, mod, user, permalink);
-    const post = await context.reddit.submitPost({
-        subredditName: settings[AppSetting.TargetSubredit],
-        ...content
-    });
-    console.log(`Created post ${post.id} for event ${eventId}`);
+    if (!settings[AppSetting.ModerationActions].includes(event.action)) {
+        console.log(`${event.action} actions are not being recorded, skipping event ${eventid}`);
+        return;
+    }
 
-    // adds a link-record for the new action's post
-    await context.redis.zAdd(RK_MOD_ACTION(thingId), { member: post.id, score: event.actionedAt!.getTime() });
-    console.log(`Added post ${post.id} to thing ${thingId}'s record`);
+    // subreddit-ModTeam can't take actions, but we still want to ignore any events where it's the target
+    const subredditModTeamUser = `${event.subreddit.name}-ModTeam`;
+    if (event.targetUser.name === subredditModTeamUser) {
+        console.log(`${subredditModTeamUser} is excluded from recording, skipping event ${eventid}`);
+        return;
+    }
 
-    const audit = {
-        type: event.action!,
-        actor: mod.username,
-        thingId,
-        permalink: permalink ?? '',
-        createdAt: event.actionedAt!.getTime().toString(),
-    };
-
-    await context.redis.hSet(RK_AUDIT(post.id), audit);
-    console.log(`Added audit record for post ${post.id}`);
+    await disclose(event, context);
+    console.log(`disclosed event ${eventid}`);
 };
