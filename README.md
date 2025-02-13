@@ -40,7 +40,7 @@ Open Mod respects the privacy of you, your co-moderators, and your users. The ap
 
 ## About
 
-This app is open source and licenced under the [GNU AGPL v3](https://choosealicense.com/licenses/agpl-3.0/) licence. You can find the source code on GitHub [here](https://github.com/SuspiciousGoose/openmod).
+This app is open source and licenced under the [GNU AGPL v3](https://choosealicense.com/licenses/agpl-3.0/) licence. You can find the source code on GitHub [here](https://github.com/AnAbsurdlyAngryGoose/openmod).
 
 With special thanks to u/xenc for their help testing the app, and to u/fsv for their support implementing CDP enforcement (and for inspiring the format of this README).
 
