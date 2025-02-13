@@ -73,6 +73,12 @@ export const handleModActionEvent = async (event: ModAction, context: TriggerCon
         return;
     }
 
+    const subredditModTeamUser = `${context.subredditName}-ModTeam`;
+    if (user.username === subredditModTeamUser) {
+        console.log(`User ${subredditModTeamUser} is excluded from recording, skipping event ${eventId}`);
+        return;
+    }
+
     const userId = event.targetUser!.id;
     const thingId = resolveThingIdFromModActionEvent(event);
     console.log(`Processing event ${eventId} for thing ${thingId} by ${userId}`);

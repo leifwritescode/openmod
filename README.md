@@ -35,6 +35,10 @@ With special thanks to u/xenc for their help testing the app, and to u/fsv for t
 
 ## Version History
 
+### v1.0.1
+
+- Actions taken against the subreddit mod team pseudo-account are now excluded from the public extract.
+
 ### v1.0
 
 Initial version of Open Mod published.
