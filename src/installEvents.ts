@@ -1,7 +1,7 @@
 import { AppInstall, AppUpgrade } from "@devvit/protos";
 import { TriggerContext } from "@devvit/public-api";
-import { CDP_ENFORCEMENT_SCHEDULE, CDP_ENFORCEMENT_TASK, RK_CACHED_THING } from "./constants.js";
-import { cacheUser } from "./utility.js";
+import { CDP_ENFORCEMENT_SCHEDULE, CDP_ENFORCEMENT_TASK } from "./constants.js";
+import { cacheUser } from "./redis.js";
 
 export const onAppFirstInstall = async (_: AppInstall, context: TriggerContext) => {
     const subredditName = await context.reddit.getCurrentSubredditName();
