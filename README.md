@@ -10,7 +10,7 @@ Open Mod is configurable, and supports the following options.
 
 - The subreddit in which to post the public extracts,
 - Whether or not to include Reddit admins in the public extract,
-- Whether or not to automoderator in the public extract,
+- Whether or not to include automoderator in the public extract,
 - Selection of which moderation actions to create extracts from,
 - A list of moderators to exclude from the public extract, and
 - A list of users to exclude from the public extract
