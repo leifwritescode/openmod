@@ -1,5 +1,3 @@
-import { User } from "@devvit/public-api";
-
 export type Nothing = { };
 
 export enum ModActionType {
@@ -24,9 +22,9 @@ export enum SpecialAccountName {
     Reddit = 'reddit',
     RedditLegal = 'Reddit Legal',
     AntiEvilOperations = 'Anti-Evil Operations',
-    Redacted = '[ redacted ]',
-    Deleted = '[ deleted ]',
-    Unavailable = '[ unavailable ]',
+    Redacted = '[ redacted ]',        // anti evil operations
+    Deleted = '[ deleted ]',          // deleted/suspended
+    Unavailable = '[ unavailable ]',  // user not found
 };
 
 export enum ExtractUpdateReason {
@@ -105,7 +103,17 @@ type MuteUserExtract = BaseExtract<ModActionType.MuteUser> & MuteExtract & { len
 type UnmuteUserExtract = BaseExtract<ModActionType.UnmuteUser> & MuteExtract;
 type TestType = BaseExtract<ModActionType.RemoveLink>;
 
-export type Extract = TestType | RemoveLinkExtract | SpamLinkExtract | ApproveLinkExtract | RemoveCommentExtract | SpamCommentExtract | ApproveCommentExtract | BanUserExtract | UnbanUserExtract | MuteUserExtract | UnmuteUserExtract;
+export type Extract = TestType
+                    | RemoveLinkExtract
+                    | SpamLinkExtract
+                    | ApproveLinkExtract
+                    | RemoveCommentExtract
+                    | SpamCommentExtract
+                    | ApproveCommentExtract
+                    | BanUserExtract
+                    | UnbanUserExtract
+                    | MuteUserExtract
+                    | UnmuteUserExtract;
 
 export const hasTarget = (extract: Extract): extract is Extract & HasTarget => {
     return 'target' in extract;

@@ -1,31 +1,37 @@
 import { TriggerContext } from "@devvit/public-api";
 import { ModAction } from "@devvit/protos";
 import { CachedComment, CachedPost, CachedUser, CommentID, Extract, ExtractV1, LinkID, ModActionType, ThingID, UserID, hasComment, hasLink, hasTarget } from "./types.js";
-import { MOD_ACTION_PAST_SIMPLE, MOD_ACTION_PREPOSITION, RK_EXTRACT, RK_MOD_ACTION, RK_USER } from "./constants.js";
-import { AppSetting } from "./settings.js";
-import { getCachedComment, getCachedPost, getCachedUser } from "./redis.js";
+import { MOD_ACTION_PAST_SIMPLE, MOD_ACTION_PREPOSITION } from "./constants.js";
+import { addExtract, addModAction, getCachedComment, getCachedPost, getCachedUser, getExtract, getModActions, resetExtract } from "./redis.js";
 
-const isExtractV1 = (record: Record<string, string>): record is ExtractV1 => {
+export const isExtractV1 = (record: Record<string, string>): record is ExtractV1 => {
     return 'thingId' in record;
 };
 
-const upgradeExtract = async (linkid: LinkID, extract: ExtractV1, context: TriggerContext): Promise<Extract> => {
-    let newExtract: Extract;
+export const upgradeExtract = async (linkid: LinkID, extract: ExtractV1, context: TriggerContext): Promise<Extract> => {
+    await resetExtract(linkid, newExtract, context);
+    return newExtract;
+};
 
-    // v1 extracts stored the actor by their username, but we need the t2
-    const actor = await context.reddit.getUserByUsername(extract.actor);
-    if (!actor) {
-        throw new Error(`unexpectly failed to find moderator ${extract.actor}, unable to continue`);
+const distilEvent = async (event: ModAction, context: TriggerContext): Promise<Extract> => {
+    if (!event.moderator || !event.action) {
+        throw new Error(`unexpectedly missing moderator or action in event ${event}`);
     }
 
-    switch (extract.type) {
+    const actor = await getCachedUser(event.moderator.id as UserID, context);
+    if (!actor) {
+        throw new Error(`unexpectly failed to find moderator ${event.moderator.id}, unable to continue`);
+    }
+
+    let extract: Extract;
+    switch (event.action) {
         case ModActionType.RemoveLink:
         case ModActionType.SpamLink:
         case ModActionType.ApproveLink:
             // thing id is a post, and we need the author's t2
-            const post = await getCachedPost(extract.thingId as LinkID, context);
+            const post = await getCachedPost(event.targetPost?.id as LinkID, context);
 
-            newExtract = {
+            extract = {
                 type: extract.type,
                 actor: actor.id,
                 target: post.author,
@@ -38,7 +44,7 @@ const upgradeExtract = async (linkid: LinkID, extract: ExtractV1, context: Trigg
             // thing id is a comment, and we need the author's t2
             const comment = await getCachedComment(extract.thingId as CommentID, context);
 
-            newExtract = {
+            extract = {
                 type: extract.type,
                 actor: actor.id,
                 target: comment.author,
@@ -47,7 +53,7 @@ const upgradeExtract = async (linkid: LinkID, extract: ExtractV1, context: Trigg
             break;
         case ModActionType.BanUser:
         case ModActionType.MuteUser:
-            newExtract = {
+            extract = {
                 type: extract.type,
                 actor: actor.id,
                 target: extract.thingId as UserID,
@@ -56,27 +62,17 @@ const upgradeExtract = async (linkid: LinkID, extract: ExtractV1, context: Trigg
             break;
         case ModActionType.UnbanUser:
         case ModActionType.UnmuteUser:
-            newExtract = {
+            extract = {
                 type: extract.type,
                 actor: actor.id,
                 target: extract.thingId as UserID,
             };
             break;
         default:
-            throw new Error(`unexpected extract type ${extract.type}`);
+            throw new Error(`unexpected event ${event.action}`);
     }
 
-    await context.redis.hSet(RK_EXTRACT(linkid), newExtract);
-    return newExtract;
-};
-
-const getExtract = async (linkid: LinkID, context: TriggerContext): Promise<Extract> => {
-    const record = await context.redis.hGetAll(RK_EXTRACT(linkid));
-    if (isExtractV1(record)) {
-        return upgradeExtract(linkid, record, context);
-    }
-
-    return record as Extract;
+    return extract;
 };
 
 type Context = {
@@ -163,26 +159,35 @@ const updatePublishedExtract = async (linkid: LinkID, context: TriggerContext): 
 };
 
 export const disclose = async (event: ModAction, context: TriggerContext): Promise<void> => {
-    // TODO disclose
-    await context.redis.zAdd(RK_USER(extract.target), { member: extract.thing, score: Number(extract.createdAt)})
-    console.log(`Added ${extract.thing} to user ${extract.target}'s record`);
+    const extract = await distilEvent(event, context);
+    if (!hasTarget(extract)) {
+        console.log(`extract ${extract} with no target is not supported for disclosure`);
+        return;
+    }
 
-    // todo is there a way we can work out whether we're publishing a new extract or replacing an old one?
-    const publicExtract = buildPublicExtract(extract, context);
-    const post = await context.reddit.submitPost({
-        subredditName: settings[AppSetting.TargetSubredit],
-        title: publicExtract.title,
-        text: publicExtract.body
-    });
-    console.log(`Created post ${post.id} for event ${extract.thing}`);
+    const extractid = await publishExtract(extract, context);
 
-    await context.redis.zAdd(RK_MOD_ACTION(extract.thing), { member: post.id, score: post.createdAt.getTime() });
-    console.log(`Added post ${post.id} to thing ${extract.thing}'s record`);
+    let thingid: ThingID;
+    if (hasLink(extract)) {
+        thingid = extract.link;
+    } else if (hasComment(extract)) {
+        thingid = extract.comment;
+    } else {
+        thingid = extract.target;
+    }
 
-    await context.redis.hSet(RK_EXTRACT(post.id), extract as PartialExtract);
-    console.log(`Added audit record for post ${post.id}`);
+    await addModAction(thingid, extractid, context);
+    await addExtract(extractid, extract, context);
 };
 
-export const updateDisclosure = async (thingid: ThingID, context: TriggerContext): Promise<void> => {
-    // TODO updateDisclosure
+export const updateDisclosures = async (thingid: ThingID, context: TriggerContext): Promise<void> => {
+    const actions = await getModActions(thingid, context);
+    if (actions.length === 0) {
+        console.log(`mod action set ${thingid} empty`);
+        return;
+    }
+
+    for (const action of actions) {
+        await updatePublishedExtract(action.member, context);
+    }
 };

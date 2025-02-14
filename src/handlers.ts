@@ -6,7 +6,7 @@ import { enforceContentDeletionPolicyForThing } from './cdpEnforcement.js';
 import { ThingID, UserID } from './types.js';
 import { now, seconds } from './temporal.js';
 import { cacheComment, cachePost, cacheUser, getCachedUser, trackThing } from './redis.js';
-import { disclose } from './extract.js';
+import { disclose, updateDisclosures } from './extract.js';
 
 export const isEventDuplicated = async (event: string, context: TriggerContext): Promise<boolean> => {
     const key = `event:${event}`;
@@ -59,7 +59,7 @@ export const handleCommentSubmitOrUpdateEvent = async (event: CommentSubmit | Co
     await trackThing(comment, context);
 
     if (isCommentUpdate(event)) {
-        await updateDisclosure(comment.id, context);
+        await updateDisclosures(comment.id, context);
     }
 };
 
@@ -102,7 +102,7 @@ export const handlePostSubmitOrUpdateEvent = async (event: PostSubmit | PostUpda
     await trackThing(post, context);
 
     if (isPostUpdate(event)) {
-        await updateDisclosure(post.id, context);
+        await updateDisclosures(post.id, context);
     }
 };
 
